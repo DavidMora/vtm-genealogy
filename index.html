@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genealogy Mind Map</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        #mindmap-container {
+            width: 100%;
+            height: 800px;
+            border: 1px solid #ccc;
+            overflow: hidden;
+        }
+        .node circle {
+            fill: steelblue;
+            stroke: #fff;
+            stroke-width: 2px;
+        }
+        .node text {
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+        }
+        .link {
+            stroke: #333;  /* Darker color for visibility */
+            stroke-width: 1.5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Genealogy Mind Map</h1>
+    <label for="clan-select">Select Clan:</label>
+    <select id="clan-select">
+        <option value="all">Show Entire Map</option>
+    </select>
+    
+    <label for="vampire-select">Select Vampire:</label>
+    <select id="vampire-select">
+        <option value="">--Choose a Vampire--</option>
+    </select>
+    
+    <div id="mindmap-container"></div>
+
+    <script>
+        const loadJSON = async (url) => {
+            const response = await fetch(url);
+            return await response.json();
+        };
+
+        const createMindMap = (data) => {
+            // clear undefined connections
+            data.connections = data.connections.filter(c => c.source && c.target);
+            d3.select("#mindmap-container").selectAll("*").remove(); // Clear existing mind map
+            
+            const width = document.getElementById("mindmap-container").offsetWidth;
+            const height = document.getElementById("mindmap-container").offsetHeight;
+
+            // Set up zoom and pan
+            const svg = d3.select("#mindmap-container")
+                .append("svg")
+                .attr("width", width)
+                .attr("height", height)
+                .call(d3.zoom().scaleExtent([0.5, 2]).on("zoom", (event) => {
+                    g.attr("transform", event.transform);
+                }))
+                .append("g");
+
+            const g = svg.append("g");
+            console.log(data.elements, data.connections)
+            // Force simulation with isolated nodes support
+            const simulation = d3.forceSimulation(data.elements)
+                .force("link", d3.forceLink(data.connections)
+                    .id(d => d.id)
+                    .distance(100))
+                .force("charge", d3.forceManyBody().strength(-200))
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .force("collision", d3.forceCollide(40))  // Prevent nodes from overlapping
+                .on("tick", ticked);
+
+            // Draw links (only valid connections where both nodes exist)
+            const link = g.append("g")
+                .selectAll(".link")
+                .data(data.connections)
+                .enter().append("line")
+                .attr("class", "link");
+
+            // Draw nodes (include all elements)
+            const node = g.append("g")
+                .selectAll(".node")
+                .data(data.elements)
+                .enter().append("g")
+                .attr("class", "node")
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended));
+
+            node.append("circle").attr("r", 5);
+
+            // Display name with generation in parentheses
+            node.append("text")
+                .attr("dy", -10)
+                .attr("text-anchor", "middle")
+                .text(d => `${d.label} (${d.data.Generation})`);
+
+            function ticked() {
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+
+                node
+                    .attr("transform", d => `translate(${d.x},${d.y})`);
+            }
+
+            function dragstarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+
+            function dragended(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+        };
+
+        const populateSelectMenus = (data, selectedClan = undefined) => {
+            const clans = [...new Set(data.elements.map(e => e.data.Clan))].sort();
+            const clanSelect = document.getElementById("clan-select");
+            clans.forEach(clan => {
+                const option = document.createElement("option");
+                option.value = clan;
+                option.textContent = clan;
+                clanSelect.appendChild(option);
+            });
+
+            const vampireSelect = document.getElementById("vampire-select");
+            let elements = data.elements.sort((a, b) => a.label.localeCompare(b.label));
+            if (selectedClan) {
+                
+                elements = elements.filter(e => e.data.Clan === selectedClan);
+            }
+            vampireSelect.innerHTML = "<option value=''>--Choose a Vampire--</option>";
+            elements.forEach(vampire => {
+                const option = document.createElement("option");
+                option.value = vampire.id;
+                option.textContent = vampire.label;
+                vampireSelect.appendChild(option);
+            });
+        };
+
+        const filterDataByClan = (data, selectedClan) => {
+            if (selectedClan === "all") return data; // Show entire map if "all" is selected
+
+            const filteredElements = data.elements.filter(e => e.data.Clan === selectedClan);
+            const filteredIds = new Set(filteredElements.map(e => e.id));  // Use label for consistency
+            const filteredConnections = data.connections
+                .filter(c => filteredIds.has(c.source) || filteredIds.has(c.target))
+                .map(c => ({
+                    source: filteredElements.find(e => e.id === c.source),
+                    target: filteredElements.find(e => e.id === c.target)
+                }));
+
+            return { elements: filteredElements, connections: filteredConnections };
+        };
+
+        const filterDataByVampire = (data, selectedVampire) => {
+            const vampire = data.elements.find(e => e.id == selectedVampire);
+            if (!vampire) return { elements: [], connections: [] };  // Return empty if vampire not found
+
+            const connections = data.connections.filter(c => c.source == vampire.id || c.target == vampire.id);
+            const connectedElements = data.elements.filter(e => connections.some(c => c.source == e.id || c.target == e.id));
+            // include selected vampire
+            const allVampireData = data.elements.filter(e => e.id == selectedVampire);
+            connectedElements.push(...allVampireData);
+            
+            // force ids to be numeric
+            connectedElements.forEach((e, i) => e.id = Number(e.id));
+            connections.forEach(c => {
+                c.source = Number(c.source);
+                c.target = Number(c.target);
+            });
+            return {
+                elements: connectedElements,
+                connections
+            };
+        };
+
+        (async () => {
+            const data = await loadJSON("kumu_data.json"); // Replace with actual path if different
+            populateSelectMenus(data);
+
+            document.getElementById("clan-select").addEventListener("change", (event) => {
+                const selectedClan = event.target.value;
+                populateSelectMenus(data, selectedClan);
+                const filteredData = filterDataByClan(data, selectedClan);
+                createMindMap(filteredData);
+            });
+
+            document.getElementById("vampire-select").addEventListener("change", (event) => {
+                const selectedVampire = event.target.value;
+                const filteredData = filterDataByVampire(data, selectedVampire);
+                createMindMap(filteredData);
+            });
+        })();
+    </script>
+</body>
+</html>
